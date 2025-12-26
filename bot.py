@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -17,6 +18,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 TARGET_CHANNEL = os.getenv("TARGET_CHANNEL")
+SESSION_STRING = os.getenv("SESSION_STRING")
 
 SOURCE_CHANNELS = [
     "media1337",
@@ -24,7 +26,7 @@ SOURCE_CHANNELS = [
     "TrendWatching24"
 ]
 
-userbot = TelegramClient("userbot_session", API_ID, API_HASH)
+userbot = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
