@@ -170,13 +170,19 @@ async def handle_edit_reply(message: types.Message):
 
 
 async def handle_new_post(event):
+    print(f"New message from {event.chat.username}: {event.message.text[:50] if event.message.text else 'no text'}")
+    
     if not event.message.text and not event.message.media:
+        print("Skipped: no text and no media")
         return
     
     text = event.message.text or event.message.message or ""
     if len(text) < 30:
+        print(f"Skipped: too short ({len(text)} chars)")
         return
     
+    print("Processing post...")
+    # остальной код без изменений
     rewritten = await rewrite_text(text)
     post_id = str(event.message.id) + "_" + str(event.message.date.timestamp())
     
