@@ -6,6 +6,7 @@ from telethon.sessions import StringSession
 from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters import CommandStart
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
@@ -90,21 +91,21 @@ async def publish_callback(callback: types.CallbackQuery):
     post = pending_posts[post_id]
     try:
         if post.get("media_path"):
-            with open(post["media_path"], "rb") as f:
-                if post.get("media_type") == "photo":
-                    await bot.send_photo(
-                        TARGET_CHANNEL,
-                        f,
-                        caption=post["text"],
-                        parse_mode="HTML"
-                    )
-                else:
-                    await bot.send_document(
-                        TARGET_CHANNEL,
-                        f,
-                        caption=post["text"],
-                        parse_mode="HTML"
-                    )
+            file = FSInputFile(post["media_path"])
+            if post.get("media_type") == "photo":
+                await bot.send_photo(
+                    TARGET_CHANNEL,
+                    file,
+                    caption=post["text"],
+                    parse_mode="HTML"
+                )
+            else:
+                await bot.send_document(
+                    TARGET_CHANNEL,
+                    file,
+                    caption=post["text"],
+                    parse_mode="HTML"
+                )
             os.remove(post["media_path"])
         else:
             await bot.send_message(TARGET_CHANNEL, post["text"], parse_mode="HTML")
@@ -212,21 +213,21 @@ async def handle_new_post(event):
     
     try:
         if post_data["media_path"]:
-            with open(post_data["media_path"], "rb") as f:
-                if post_data["media_type"] == "photo":
-                    await bot.send_photo(
-                        ADMIN_ID,
-                        f,
-                        caption=f"📥 Новый пост\n\n{rewritten}",
-                        reply_markup=create_keyboard(post_id)
-                    )
-                else:
-                    await bot.send_document(
-                        ADMIN_ID,
-                        f,
-                        caption=f"📥 Новый пост\n\n{rewritten}",
-                        reply_markup=create_keyboard(post_id)
-                    )
+            file = FSInputFile(post_data["media_path"])
+            if post_data["media_type"] == "photo":
+                await bot.send_photo(
+                    ADMIN_ID,
+                    file,
+                    caption=f"📥 Новый пост\n\n{rewritten}",
+                    reply_markup=create_keyboard(post_id)
+                )
+            else:
+                await bot.send_document(
+                    ADMIN_ID,
+                    file,
+                    caption=f"📥 Новый пост\n\n{rewritten}",
+                    reply_markup=create_keyboard(post_id)
+                )
         else:
             await bot.send_message(
                 ADMIN_ID,
