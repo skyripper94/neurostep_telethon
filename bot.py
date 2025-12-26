@@ -1,11 +1,9 @@
 import asyncio
 import os
-import re
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters import CommandStart
 from openai import AsyncOpenAI
@@ -183,7 +181,6 @@ async def handle_new_post(event):
         return
     
     print("Processing post...")
-    # остальной код без изменений
     rewritten = await rewrite_text(text)
     post_id = str(event.message.id) + "_" + str(event.message.date.timestamp())
     
