@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
@@ -38,10 +39,18 @@ REWRITE_PROMPT = """Перепиши новость в стиле:
 - Без эмодзи
 - Без воды и восторгов  
 - Нейтральный взрослый тон
+- Ссылки оставляй как есть, без markdown разметки
 - Если упоминается Meta/Instagram/WhatsApp — добавь сноску: * — продукт компании Meta, признана экстремистской и запрещена в РФ.
 
 Новость:
 {text}"""
+
+
+def markdown_to_html(text: str) -> str:
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'\*([^*]+)\*', r'<i>\1</i>', text)
+    return text
 
 
 async def rewrite_text(text: str) -> str:
@@ -55,7 +64,8 @@ async def rewrite_text(text: str) -> str:
             ],
             max_tokens=1000
         )
-        return response.choices[0].message.content.strip()
+        result = response.choices[0].message.content.strip()
+        return markdown_to_html(result)
     except Exception as e:
         print(f"OpenAI error: {e}")
         return text
@@ -97,6 +107,13 @@ async def publish_callback(callback: types.CallbackQuery):
                     caption=post["text"],
                     parse_mode="HTML"
                 )
+            elif post.get("media_type") == "video":
+                await bot.send_video(
+                    TARGET_CHANNEL,
+                    file,
+                    caption=post["text"],
+                    parse_mode="HTML"
+                )
             else:
                 await bot.send_document(
                     TARGET_CHANNEL,
@@ -112,7 +129,8 @@ async def publish_callback(callback: types.CallbackQuery):
         await callback.message.reply("✅ Опубликовано")
         del pending_posts[post_id]
     except Exception as e:
-        await callback.answer(f"Ошибка: {e}")
+        print(f"Publish error: {e}")
+        await callback.answer(f"Ошибка: {str(e)[:100]}")
 
 
 @dp.callback_query(lambda c: c.data.startswith("skip:"))
@@ -169,19 +187,21 @@ async def handle_edit_reply(message: types.Message):
 
 
 async def handle_new_post(event):
-    print(f"New message from {event.chat.username}: {event.message.text[:50] if event.message.text else 'no text'}")
+    text = event.message.text or event.message.message or ""
+    has_media = event.message.media is not None
     
-    if not event.message.text and not event.message.media:
+    print(f"New message from {event.chat.username}: text={len(text)} chars, media={has_media}")
+    
+    if not text and not has_media:
         print("Skipped: no text and no media")
         return
     
-    text = event.message.text or event.message.message or ""
-    if len(text) < 30:
-        print(f"Skipped: too short ({len(text)} chars)")
+    if len(text) < 20 and not has_media:
+        print(f"Skipped: too short ({len(text)} chars) and no media")
         return
     
     print("Processing post...")
-    rewritten = await rewrite_text(text)
+    rewritten = await rewrite_text(text) if text else ""
     post_id = str(event.message.id) + "_" + str(event.message.date.timestamp())
     
     post_data = {
@@ -199,38 +219,53 @@ async def handle_new_post(event):
                 post_data["media_path"] = path
                 post_data["media_type"] = "photo"
             elif isinstance(event.message.media, MessageMediaDocument):
-                if event.message.file.mime_type and event.message.file.mime_type.startswith("video"):
+                mime = event.message.file.mime_type or ""
+                if mime.startswith("video"):
                     path = await event.message.download_media(file=f"/tmp/{post_id}.mp4")
                     post_data["media_path"] = path
                     post_data["media_type"] = "video"
+                elif mime.startswith("image"):
+                    path = await event.message.download_media(file=f"/tmp/{post_id}.jpg")
+                    post_data["media_path"] = path
+                    post_data["media_type"] = "photo"
         except Exception as e:
             print(f"Media download error: {e}")
+    
+    if not rewritten and not post_data["media_path"]:
+        print("Skipped: no content after processing")
+        return
     
     pending_posts[post_id] = post_data
     
     try:
+        caption = f"📥 Новый пост\n\n{rewritten}" if rewritten else "📥 Новый пост (без текста)"
+        
         if post_data["media_path"]:
             file = FSInputFile(post_data["media_path"])
             if post_data["media_type"] == "photo":
                 await bot.send_photo(
                     ADMIN_ID,
                     file,
-                    caption=f"📥 Новый пост\n\n{rewritten}",
-                    reply_markup=create_keyboard(post_id)
+                    caption=caption,
+                    reply_markup=create_keyboard(post_id),
+                    parse_mode="HTML"
                 )
-            else:
-                await bot.send_document(
+            elif post_data["media_type"] == "video":
+                await bot.send_video(
                     ADMIN_ID,
                     file,
-                    caption=f"📥 Новый пост\n\n{rewritten}",
-                    reply_markup=create_keyboard(post_id)
+                    caption=caption,
+                    reply_markup=create_keyboard(post_id),
+                    parse_mode="HTML"
                 )
         else:
             await bot.send_message(
                 ADMIN_ID,
-                f"📥 Новый пост\n\n{rewritten}",
-                reply_markup=create_keyboard(post_id)
+                caption,
+                reply_markup=create_keyboard(post_id),
+                parse_mode="HTML"
             )
+        print(f"Sent to admin: {post_id}")
     except Exception as e:
         print(f"Send to admin error: {e}")
 
