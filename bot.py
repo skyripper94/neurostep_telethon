@@ -3,12 +3,11 @@ import os
 import re
 import logging
 import hashlib
-import subprocess
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Dict, List
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, MessageMediaPoll
+from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, InputMediaPhoto, InputMediaVideo
 from aiogram.filters import CommandStart
@@ -58,6 +57,9 @@ pending_posts = {}
 recent_hashes = []
 MAX_HASHES = 100
 scheduled_posts = {}
+
+media_groups: Dict[int, Dict] = {}
+MEDIA_GROUP_TIMEOUT = 2
 
 REWRITE_PROMPT = """Перепиши новость в стиле:
 - Первое предложение = главный факт
@@ -236,6 +238,83 @@ async def scheduled_publisher():
         await asyncio.sleep(60)
 
 
+async def process_media_group(group_id: int):
+    await asyncio.sleep(MEDIA_GROUP_TIMEOUT)
+    
+    if group_id not in media_groups:
+        return
+    
+    group_data = media_groups.pop(group_id)
+    messages = group_data["messages"]
+    source = group_data["source"]
+    
+    text = ""
+    for msg in messages:
+        msg_text = msg.text or msg.message or ""
+        if msg_text:
+            text = msg_text
+            break
+    
+    if is_ad(text):
+        logger.info(f"Skipped media group: detected as ad")
+        return
+    
+    if is_duplicate(text):
+        logger.info(f"Skipped media group: duplicate")
+        return
+    
+    rewritten = await rewrite_text(text) if text else ""
+    post_id = f"group_{group_id}_{datetime.now().timestamp()}"
+    
+    media_list = []
+    for i, msg in enumerate(messages):
+        try:
+            if isinstance(msg.media, MessageMediaPhoto):
+                path = await msg.download_media(file=f"/tmp/{post_id}_{i}.jpg")
+                media_list.append({"path": path, "type": "photo"})
+            elif isinstance(msg.media, MessageMediaDocument):
+                mime = msg.file.mime_type or ""
+                if mime.startswith("video"):
+                    path = await msg.download_media(file=f"/tmp/{post_id}_{i}.mp4")
+                    path = await compress_video(path)
+                    media_list.append({"path": path, "type": "video"})
+                elif mime.startswith("image"):
+                    path = await msg.download_media(file=f"/tmp/{post_id}_{i}.jpg")
+                    media_list.append({"path": path, "type": "photo"})
+        except Exception as e:
+            logger.error(f"Media group download error: {e}")
+    
+    if not media_list:
+        logger.info("Skipped media group: no media downloaded")
+        return
+    
+    post_data = {
+        "text": rewritten,
+        "original": text,
+        "source": source,
+        "media_path": None,
+        "media_type": None,
+        "media_group": media_list,
+        "awaiting_edit": False
+    }
+    
+    pending_posts[post_id] = post_data
+    
+    try:
+        source_label = f"📍 Источник: @{source}\n"
+        caption = f"📥 Новый пост (галерея из {len(media_list)} фото)\n{source_label}\n{rewritten}"
+        
+        if len(caption) > 1024:
+            caption = caption[:1020] + "..."
+        
+        file = FSInputFile(media_list[0]["path"])
+        await bot.send_photo(ADMIN_ID, file, caption=caption, reply_markup=create_keyboard(post_id), parse_mode="HTML")
+        
+        logger.info(f"Sent media group to admin: {post_id}")
+    except Exception as e:
+        logger.error(f"Send media group to admin error: {e}")
+
+
 @dp.message(CommandStart())
 async def start_handler(message: types.Message):
     if message.from_user.id == ADMIN_ID:
@@ -337,8 +416,20 @@ async def handle_new_post(event):
         source = event.chat.username or event.chat.title or "unknown"
         text = event.message.text or event.message.message or ""
         has_media = event.message.media is not None
+        grouped_id = event.message.grouped_id
         
-        logger.info(f"New message from @{source}: text={len(text)} chars, media={has_media}")
+        logger.info(f"New message from @{source}: text={len(text)} chars, media={has_media}, grouped={grouped_id}")
+        
+        if grouped_id:
+            if grouped_id not in media_groups:
+                media_groups[grouped_id] = {
+                    "messages": [],
+                    "source": source
+                }
+                asyncio.create_task(process_media_group(grouped_id))
+            
+            media_groups[grouped_id]["messages"].append(event.message)
+            return
         
         if not text and not has_media:
             logger.info("Skipped: no text and no media")
@@ -398,9 +489,6 @@ async def handle_new_post(event):
                         
             except Exception as e:
                 logger.error(f"Media download error: {e}")
-        
-        if event.message.grouped_id:
-            pass
         
         if not rewritten and not post_data["media_path"]:
             logger.info("Skipped: no content after processing")
