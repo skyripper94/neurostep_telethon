@@ -693,10 +693,14 @@ async def main():
         for channel in SOURCE_CHANNELS:
             try:
                 entity = await userbot.get_entity(channel)
-                userbot.add_event_handler(handle_new_post, events.NewMessage(chats=entity.id))
+                userbot.add_event_handler(handle_new_post, events.NewMessage(chats=entity))
                 logger.info(f"Listening: @{channel} (id={entity.id})")
             except Exception as e:
                 logger.error(f"Channel error @{channel}: {e}")
+        
+        @userbot.on(events.NewMessage)
+        async def debug_all_messages(event):
+            logger.info(f"DEBUG ALL: chat_id={event.chat_id}, text={len(event.message.text or '')} chars")
         
         asyncio.create_task(dp.start_polling(bot))
         asyncio.create_task(scheduled_publisher())
