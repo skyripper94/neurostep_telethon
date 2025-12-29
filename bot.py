@@ -71,6 +71,7 @@ edit_state = {}
 
 media_groups: Dict[int, Dict] = {}
 MEDIA_GROUP_TIMEOUT = 10
+monitored_channels = []
 
 stats = {
     "received": 0,
@@ -589,8 +590,13 @@ async def handle_edit_text(message: types.Message):
     )
 
 
+@userbot.on(events.NewMessage)
 async def handle_new_post(event):
-    logger.info(f"EVENT RECEIVED: chat_id={event.chat_id}")
+    logger.info(f"EVENT: chat_id={event.chat_id}, in_monitored={event.chat_id in monitored_channels}")
+    
+    if monitored_channels and event.chat_id not in monitored_channels:
+        return
+    
     try:
         source = event.chat.username or event.chat.title or "unknown"
         text = event.message.text or event.message.message or ""
@@ -688,19 +694,19 @@ async def main():
         stats["start_time"] = datetime.now().isoformat()
         
         await userbot.start()
-        logger.info("Userbot started")
+        await userbot.catch_up()
+        logger.info("Userbot started + catch_up")
         
+        global monitored_channels
         for channel in SOURCE_CHANNELS:
             try:
                 entity = await userbot.get_entity(channel)
-                userbot.add_event_handler(handle_new_post, events.NewMessage(chats=entity))
-                logger.info(f"Listening: @{channel} (id={entity.id})")
+                monitored_channels.append(entity.id)
+                logger.info(f"Found: @{channel} (id={entity.id})")
             except Exception as e:
                 logger.error(f"Channel error @{channel}: {e}")
         
-        @userbot.on(events.NewMessage)
-        async def debug_all_messages(event):
-            logger.info(f"DEBUG ALL: chat_id={event.chat_id}, text={len(event.message.text or '')} chars")
+        logger.info(f"Monitoring {len(monitored_channels)} channels: {monitored_channels}")
         
         asyncio.create_task(dp.start_polling(bot))
         asyncio.create_task(scheduled_publisher())
