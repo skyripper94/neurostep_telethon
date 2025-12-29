@@ -42,14 +42,10 @@ SOURCE_CHANNELS = [
 
 AD_KEYWORDS = [
     "реклама", "партнёр", "партнер", "промокод", "promo", 
-    "скидка", "розыгрыш", "giveaway", "спонсор", "sponsor",
+    "розыгрыш", "giveaway", "спонсор", "sponsor",
     "utm_", "?ref=", "bit.ly", "clck.ru", "erid",
-    "альфа банк", "альфа-банк", "alfabank", "тинькофф", "tinkoff",
-    "сбербанк", "sberbank", "втб", "озон", "ozon", "wildberries",
-    "вайлдберриз", "яндекс маркет", "aliexpress", "алиэкспресс",
-    "кэшбэк", "cashback", "промо", "акция", "подписка",
-    "бесплатн", "выиграй", "приз", "конкурс", "при поддержке",
-    "интеграция", "нативная", "по ссылке в описании"
+    "кэшбэк", "cashback", "при поддержке",
+    "интеграция", "нативная"
 ]
 
 logging.basicConfig(
@@ -74,7 +70,7 @@ scheduled_posts = {}
 edit_state = {}
 
 media_groups: Dict[int, Dict] = {}
-MEDIA_GROUP_TIMEOUT = 3
+MEDIA_GROUP_TIMEOUT = 10
 
 stats = {
     "received": 0,
@@ -88,26 +84,24 @@ stats = {
     "start_time": None
 }
 
-REWRITE_PROMPT = """Ты — редактор tech-канала. Твоя задача — выжать самый сок из новости.
+REWRITE_PROMPT = """Перепиши новость коротко и цепляюще.
 
-СТИЛЬ:
-- Провокационный, цепляющий, сенсационный
-- Первая строка — удар, интрига, главный факт
-- Нейтральный тон, без восторгов и показухи
-- Простой язык, понятный всем
-- Фокус: бизнес, технологии, актуальные события
+ПРАВИЛА:
+- 1-3 предложения максимум
+- Первое предложение = главный факт
+- Без эмодзи, без воды
+- Простой понятный язык
 
-ФОРМАТ:
-- 1-3 коротких предложения максимум
-- Длинный текст → сократи до сути
-- Короткий текст → выдели главное
-- Без эмодзи, без воды, без вступлений типа "Интересная новость"
+УДАЛИТЬ:
+- Любые @упоминания каналов
+- Любые ссылки на t.me/telegram
+- Чужие подписи каналов в конце
 
-ОБЯЗАТЕЛЬНО:
-- Убери ВСЕ @упоминания каналов
-- Убери ВСЕ t.me ссылки  
-- Внешние ссылки: <a href="URL">по ссылке</a>
-- Meta/Instagram/WhatsApp → сноска: * — Meta, запрещена в РФ
+ССЫЛКИ НА САЙТЫ:
+- Если есть ссылка на внешний сайт (НЕ telegram) — оформи так: <a href="URL">тут</a> или <a href="URL">подробнее</a>
+- Пример: Подробности <a href="https://example.com">тут</a>
+
+Meta/Instagram/WhatsApp → сноска: * — Meta, запрещена в РФ
 
 Текст:
 {text}"""
@@ -173,11 +167,15 @@ def is_ad(text: str) -> bool:
     return any(kw in text_lower for kw in AD_KEYWORDS)
 
 
-def clean_tg_links(text: str) -> str:
+def clean_text(text: str) -> str:
+    text = re.sub(r'<a[^>]*href=["\'][^"\']*t\.me[^"\']*["\'][^>]*>.*?</a>', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'<a[^>]*href=["\'][^"\']*telegram[^"\']*["\'][^>]*>.*?</a>', '', text, flags=re.IGNORECASE)
     text = re.sub(r'@[\w_]+', '', text)
-    text = re.sub(r't\.me/[\w_]+', '', text)
-    text = re.sub(r'https?://t\.me/[\w_]+', '', text)
+    text = re.sub(r'https?://t\.me/[\w_/]+', '', text)
+    text = re.sub(r't\.me/[\w_/]+', '', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r' {2,}', ' ', text)
+    text = re.sub(r'\s*[—\-–]\s*$', '', text)
     return text.strip()
 
 
@@ -190,7 +188,7 @@ def markdown_to_html(text: str) -> str:
 
 async def rewrite_text(text: str) -> str:
     if not text or len(text) < 20:
-        return clean_tg_links(text)
+        return clean_text(text)
     try:
         response = await openai_client.chat.completions.create(
             model="gpt-4.1",
@@ -202,12 +200,12 @@ async def rewrite_text(text: str) -> str:
         )
         result = response.choices[0].message.content.strip()
         result = markdown_to_html(result)
-        result = clean_tg_links(result)
+        result = clean_text(result)
         return result
     except Exception as e:
         logger.error(f"OpenAI error: {e}")
         inc_stat("errors")
-        return clean_tg_links(text)
+        return clean_text(text)
 
 
 def create_keyboard(post_id: str) -> InlineKeyboardMarkup:
@@ -228,6 +226,50 @@ async def send_error_alert(error_msg: str):
         await bot.send_message(ADMIN_ID, f"🚨 Ошибка:\n{error_msg[:500]}")
     except:
         pass
+
+
+async def send_preview_to_admin(post_data: dict, post_id: str):
+    """Отправляет превью поста админу"""
+    try:
+        await bot.send_message(ADMIN_ID, f"📍 Источник: @{post_data['source']}")
+        
+        caption = post_data["text"] if post_data["text"] else "(без текста)"
+        if len(caption) > 1024:
+            caption = caption[:1020] + "..."
+        
+        if post_data.get("media_group") and len(post_data["media_group"]) > 1:
+            media_group = []
+            for i, media in enumerate(post_data["media_group"]):
+                if not os.path.exists(media["path"]):
+                    continue
+                file = FSInputFile(media["path"])
+                cap = caption if i == 0 else None
+                if media["type"] == "photo":
+                    media_group.append(InputMediaPhoto(media=file, caption=cap, parse_mode="HTML"))
+                elif media["type"] == "video":
+                    media_group.append(InputMediaVideo(media=file, caption=cap, parse_mode="HTML"))
+            
+            if media_group:
+                await bot.send_media_group(ADMIN_ID, media_group)
+                await bot.send_message(ADMIN_ID, "👆 Выбери действие:", reply_markup=create_keyboard(post_id))
+        
+        elif post_data.get("media_path"):
+            file = FSInputFile(post_data["media_path"])
+            if post_data["media_type"] == "photo":
+                await bot.send_photo(ADMIN_ID, file, caption=caption, reply_markup=create_keyboard(post_id), parse_mode="HTML")
+            elif post_data["media_type"] == "video":
+                await bot.send_video(ADMIN_ID, file, caption=caption, reply_markup=create_keyboard(post_id), parse_mode="HTML")
+            elif post_data["media_type"] == "gif":
+                await bot.send_animation(ADMIN_ID, file, caption=caption, reply_markup=create_keyboard(post_id), parse_mode="HTML")
+        else:
+            await bot.send_message(ADMIN_ID, caption, reply_markup=create_keyboard(post_id), parse_mode="HTML")
+        
+        logger.info(f"Preview sent: {post_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Preview error: {e}")
+        inc_stat("errors")
+        return False
 
 
 async def publish_post(post: dict, post_id: str) -> bool:
@@ -302,13 +344,14 @@ async def process_media_group(group_id: int):
     await asyncio.sleep(MEDIA_GROUP_TIMEOUT)
     
     if group_id not in media_groups:
+        logger.warning(f"Media group {group_id} not found after timeout")
         return
     
     group_data = media_groups.pop(group_id)
     messages = sorted(group_data["messages"], key=lambda m: m.id)
     source = group_data["source"]
     
-    logger.info(f"Processing media group {group_id} with {len(messages)} messages")
+    logger.info(f"Processing media group {group_id}: {len(messages)} items from @{source}")
     inc_stat("received", source)
     
     text = ""
@@ -319,12 +362,12 @@ async def process_media_group(group_id: int):
             break
     
     if is_ad(text):
-        logger.info("Skipped media group: ad")
+        logger.info(f"Skipped group {group_id}: ad detected")
         inc_stat("filtered_ad", source)
         return
     
     if is_duplicate(text):
-        logger.info("Skipped media group: duplicate")
+        logger.info(f"Skipped group {group_id}: duplicate")
         inc_stat("filtered_duplicate", source)
         return
     
@@ -345,15 +388,17 @@ async def process_media_group(group_id: int):
                     path = await msg.download_media(file=f"/tmp/{post_id}_{i}.mp4")
                     if path:
                         media_list.append({"path": path, "type": "video"})
+                        logger.info(f"Downloaded video {i+1}/{len(messages)}")
                 elif mime.startswith("image"):
                     path = await msg.download_media(file=f"/tmp/{post_id}_{i}.jpg")
                     if path:
                         media_list.append({"path": path, "type": "photo"})
+                        logger.info(f"Downloaded image {i+1}/{len(messages)}")
         except Exception as e:
             logger.error(f"Media download error: {e}")
     
     if not media_list:
-        logger.info("Skipped: no media")
+        logger.info(f"Skipped group {group_id}: no media downloaded")
         return
     
     post_data = {
@@ -367,26 +412,13 @@ async def process_media_group(group_id: int):
     }
     
     pending_posts[post_id] = post_data
-    
-    try:
-        file = FSInputFile(media_list[0]["path"])
-        await bot.send_photo(
-            ADMIN_ID, 
-            file, 
-            caption=rewritten if rewritten else "(без текста)",
-            reply_markup=create_keyboard(post_id), 
-            parse_mode="HTML"
-        )
-        logger.info(f"Sent group to admin: {post_id}, {len(media_list)} media")
-    except Exception as e:
-        logger.error(f"Send error: {e}")
-        inc_stat("errors")
+    await send_preview_to_admin(post_data, post_id)
 
 
 @dp.message(CommandStart())
 async def start_handler(message: types.Message):
     if message.from_user.id == ADMIN_ID:
-        await message.answer("Бот работает ✅\n\nКоманды:\n/stats — статистика\n/reset_stats — сброс")
+        await message.answer("Бот работает ✅\n\n/stats — статистика\n/reset_stats — сброс")
 
 
 @dp.message(Command("stats"))
@@ -552,7 +584,7 @@ async def handle_edit_text(message: types.Message):
     
     pending_posts[post_id]["text"] = message.text
     await message.reply(
-        f"Текст обновлён:\n\n{message.text}",
+        f"✅ Текст обновлён:\n\n{message.text}",
         reply_markup=create_keyboard(post_id)
     )
 
@@ -564,30 +596,33 @@ async def handle_new_post(event):
         has_media = event.message.media is not None
         grouped_id = event.message.grouped_id
         
-        logger.info(f"@{source}: {len(text)} chars, media={has_media}, group={grouped_id}")
+        logger.info(f"NEW: @{source} | {len(text)} chars | media={has_media} | group={grouped_id}")
         
         if grouped_id:
             if grouped_id not in media_groups:
                 media_groups[grouped_id] = {"messages": [], "source": source}
                 asyncio.create_task(process_media_group(grouped_id))
             media_groups[grouped_id]["messages"].append(event.message)
+            logger.info(f"Group {grouped_id}: added msg, total={len(media_groups[grouped_id]['messages'])}")
             return
         
         inc_stat("received", source)
         
         if not text and not has_media:
+            logger.info(f"SKIP: no text and no media")
             return
         
         if len(text) < 20 and not has_media:
+            logger.info(f"SKIP: text too short ({len(text)} chars)")
             return
         
         if is_ad(text):
-            logger.info("Skipped: ad")
+            logger.info(f"SKIP: ad detected")
             inc_stat("filtered_ad", source)
             return
         
         if is_duplicate(text):
-            logger.info("Skipped: duplicate")
+            logger.info(f"SKIP: duplicate")
             inc_stat("filtered_duplicate", source)
             return
         
@@ -610,49 +645,36 @@ async def handle_new_post(event):
                     path = await event.message.download_media(file=f"/tmp/{post_id}.jpg")
                     post_data["media_path"] = path
                     post_data["media_type"] = "photo"
+                    logger.info(f"Downloaded photo: {path}")
                 elif isinstance(event.message.media, MessageMediaDocument):
                     mime = event.message.file.mime_type or ""
                     if mime.startswith("video"):
                         path = await event.message.download_media(file=f"/tmp/{post_id}.mp4")
                         post_data["media_path"] = path
                         post_data["media_type"] = "video"
+                        logger.info(f"Downloaded video: {path}")
                     elif "gif" in mime or (event.message.file.name or "").endswith('.gif'):
                         path = await event.message.download_media(file=f"/tmp/{post_id}.gif")
                         post_data["media_path"] = path
                         post_data["media_type"] = "gif"
+                        logger.info(f"Downloaded gif: {path}")
                     elif mime.startswith("image"):
                         path = await event.message.download_media(file=f"/tmp/{post_id}.jpg")
                         post_data["media_path"] = path
                         post_data["media_type"] = "photo"
+                        logger.info(f"Downloaded image: {path}")
+                    else:
+                        logger.info(f"SKIP: unsupported media type: {mime}")
             except Exception as e:
-                logger.error(f"Media error: {e}")
+                logger.error(f"Media download error: {e}")
                 inc_stat("errors")
         
         if not rewritten and not post_data["media_path"]:
+            logger.info(f"SKIP: no content after processing")
             return
         
         pending_posts[post_id] = post_data
-        
-        try:
-            caption = rewritten if rewritten else "(без текста)"
-            if len(caption) > 1024:
-                caption = caption[:1020] + "..."
-            
-            if post_data["media_path"]:
-                file = FSInputFile(post_data["media_path"])
-                if post_data["media_type"] == "photo":
-                    await bot.send_photo(ADMIN_ID, file, caption=caption, reply_markup=create_keyboard(post_id), parse_mode="HTML")
-                elif post_data["media_type"] == "video":
-                    await bot.send_video(ADMIN_ID, file, caption=caption, reply_markup=create_keyboard(post_id), parse_mode="HTML")
-                elif post_data["media_type"] == "gif":
-                    await bot.send_animation(ADMIN_ID, file, caption=caption, reply_markup=create_keyboard(post_id), parse_mode="HTML")
-            else:
-                await bot.send_message(ADMIN_ID, caption, reply_markup=create_keyboard(post_id), parse_mode="HTML")
-            
-            logger.info(f"Sent: {post_id}")
-        except Exception as e:
-            logger.error(f"Send error: {e}")
-            inc_stat("errors")
+        await send_preview_to_admin(post_data, post_id)
             
     except Exception as e:
         logger.error(f"Handler error: {e}")
@@ -671,9 +693,9 @@ async def main():
             try:
                 entity = await userbot.get_entity(channel)
                 userbot.add_event_handler(handle_new_post, events.NewMessage(chats=entity))
-                logger.info(f"Listening: {channel}")
+                logger.info(f"Listening: @{channel}")
             except Exception as e:
-                logger.error(f"Channel error {channel}: {e}")
+                logger.error(f"Channel error @{channel}: {e}")
         
         asyncio.create_task(dp.start_polling(bot))
         asyncio.create_task(scheduled_publisher())
