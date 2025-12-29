@@ -31,7 +31,13 @@ STATS_FILE = "/tmp/bot_stats.json"
 SOURCE_CHANNELS = [
     "media1337",
     "iPumpBrain",
-    "TrendWatching24"
+    "TrendWatching24",
+    "costperlead",
+    "trendsetter",
+    "provod",
+    "MirFacto",
+    "biz_FM",
+    "Business_father"
 ]
 
 AD_KEYWORDS = [
