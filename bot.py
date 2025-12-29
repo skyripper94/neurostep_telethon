@@ -590,6 +590,7 @@ async def handle_edit_text(message: types.Message):
 
 
 async def handle_new_post(event):
+    logger.info(f"EVENT RECEIVED: chat_id={event.chat_id}")
     try:
         source = event.chat.username or event.chat.title or "unknown"
         text = event.message.text or event.message.message or ""
@@ -692,8 +693,8 @@ async def main():
         for channel in SOURCE_CHANNELS:
             try:
                 entity = await userbot.get_entity(channel)
-                userbot.add_event_handler(handle_new_post, events.NewMessage(chats=entity))
-                logger.info(f"Listening: @{channel}")
+                userbot.add_event_handler(handle_new_post, events.NewMessage(chats=entity.id))
+                logger.info(f"Listening: @{channel} (id={entity.id})")
             except Exception as e:
                 logger.error(f"Channel error @{channel}: {e}")
         
