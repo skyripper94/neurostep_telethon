@@ -591,33 +591,20 @@ async def main():
     await userbot.start()
     logger.info("Userbot started")
     
-    channel_ids = set()
+    registered = 0
     for channel in SOURCE_CHANNELS:
         try:
             entity = await userbot.get_entity(channel)
-            channel_ids.add(entity.id)
-            logger.info(f"OK: @{channel} (id={entity.id})")
+            userbot.add_event_handler(handle_new_post, events.NewMessage(chats=entity))
+            logger.info(f"✓ @{channel}")
+            registered += 1
         except Exception as e:
-            logger.error(f"FAIL: @{channel}: {e}")
-    
-    def get_clean_id(chat_id):
-        cid = abs(chat_id)
-        if cid > 1000000000000:
-            return int(str(cid)[3:])
-        return cid
-    
-    @userbot.on(events.NewMessage)
-    async def on_new_message(event):
-        clean_id = get_clean_id(event.chat_id)
-        if clean_id in channel_ids:
-            await handle_new_post(event)
-    
-    logger.info(f"Monitoring {len(channel_ids)} channels: {channel_ids}")
+            logger.error(f"✗ @{channel}: {e}")
     
     asyncio.create_task(dp.start_polling(bot))
     asyncio.create_task(scheduled_publisher())
     
-    await bot.send_message(ADMIN_ID, f"🟢 Бот запущен\nКаналов: {len(channel_ids)}")
+    await bot.send_message(ADMIN_ID, f"🟢 Бот запущен\nКаналов: {registered}/{len(SOURCE_CHANNELS)}")
     await userbot.run_until_disconnected()
 
 
