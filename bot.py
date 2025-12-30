@@ -70,7 +70,7 @@ scheduled_posts = {}
 edit_state = {}
 
 media_groups: Dict[int, Dict] = {}
-MEDIA_GROUP_TIMEOUT = 5
+MEDIA_GROUP_TIMEOUT = 10
 
 stats = {
     "received": 0,
@@ -390,7 +390,7 @@ async def handle_new_post(event):
         has_media = event.message.media is not None
         grouped_id = event.message.grouped_id
         
-        logger.info(f"NEW: @{source} | {len(text)} chars | media={has_media}")
+        logger.info(f"NEW: @{source} | {len(text)} chars | media={has_media} | group={grouped_id}")
         
         if grouped_id:
             if grouped_id not in media_groups:
@@ -572,10 +572,8 @@ async def edit_callback(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.message(lambda m: m.from_user.id == ADMIN_ID and m.from_user.id in edit_state)
+@dp.message(lambda m: m.from_user.id in edit_state and m.text and not m.text.startswith("/"))
 async def handle_edit_text(message: types.Message):
-    if message.from_user.id not in edit_state:
-        return
     post_id = edit_state.pop(message.from_user.id)
     if post_id not in pending_posts:
         await message.reply("Не актуален")
