@@ -13,8 +13,6 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, InputMediaPhoto, InputMediaVideo
 from aiogram.filters import CommandStart, Command
 from aiogram.client.default import DefaultBotProperties
-from aiogram.client.session.aiohttp import AiohttpSession
-from aiohttp import ClientTimeout
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
@@ -68,8 +66,7 @@ logger = logging.getLogger(__name__)
 
 userbot = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
-session = AiohttpSession(timeout=ClientTimeout(total=60, connect=30))
-bot = Bot(token=BOT_TOKEN, session=session)
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
@@ -916,7 +913,7 @@ async def run_bot_polling():
         try:
             logger.info("Starting aiogram polling...")
             retry_delay = 5
-            await dp.start_polling(bot, polling_timeout=30)
+            await dp.start_polling(bot)
         except Exception as e:
             logger.error(f"Polling error: {e}")
             logger.info(f"Retrying in {retry_delay}s...")
