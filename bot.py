@@ -25,7 +25,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID"))
 TARGET_CHANNEL = os.getenv("TARGET_CHANNEL")
 SESSION_STRING = os.getenv("SESSION_STRING")
 
-CHANNEL_FOOTER = "\n\n@neurostep_media"
+CHANNEL_FOOTER = '\n\n<a href="https://t.me/nsmedia23">NS Media</a>'
 STATS_FILE = "/tmp/bot_stats.json"
 
 SOURCE_CHANNELS = [
@@ -222,13 +222,12 @@ def create_keyboard(post_id: str) -> InlineKeyboardMarkup:
 
 async def send_preview_to_admin(post_data: dict, post_id: str):
     try:
+        text_with_footer = (post_data["text"] + CHANNEL_FOOTER) if post_data["text"] else CHANNEL_FOOTER
+        caption = text_with_footer if len(text_with_footer) <= 1024 else text_with_footer[:1020] + "..."
+        
         await bot.send_message(ADMIN_ID, f"📍 @{post_data['source']}")
         
-        caption = post_data["text"] if post_data["text"] else "(без текста)"
-        if len(caption) > 1024:
-            caption = caption[:1020] + "..."
-        
-        if post_data.get("media_group") and len(post_data["media_group"]) > 1:
+        if post_data.get("media_group") and len(post_data["media_group"]) >= 1:
             media_group = []
             for i, media in enumerate(post_data["media_group"]):
                 if not os.path.exists(media["path"]):
@@ -244,7 +243,7 @@ async def send_preview_to_admin(post_data: dict, post_id: str):
                 await bot.send_media_group(ADMIN_ID, media_group)
                 await bot.send_message(ADMIN_ID, "👆", reply_markup=create_keyboard(post_id))
         
-        elif post_data.get("media_path"):
+        elif post_data.get("media_path") and os.path.exists(post_data["media_path"]):
             file = FSInputFile(post_data["media_path"])
             if post_data["media_type"] == "photo":
                 await bot.send_photo(ADMIN_ID, file, caption=caption, reply_markup=create_keyboard(post_id), parse_mode="HTML")
@@ -459,7 +458,7 @@ async def handle_new_post(event):
 @dp.message(CommandStart())
 async def start_handler(message: types.Message):
     if message.from_user.id == ADMIN_ID:
-        await message.answer("✅ Бот работает\n/stats — статистика")
+        await message.answer("✅ Бот работает\n/stats — статистика\n/cleanup — очистка кэша")
 
 
 @dp.message(Command("stats"))
@@ -502,6 +501,32 @@ async def reset_stats_handler(message: types.Message):
     await message.answer("🔄 Сброшено")
 
 
+@dp.message(Command("cleanup"))
+async def cleanup_handler(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    deleted_files = 0
+    deleted_bytes = 0
+    
+    for f in os.listdir("/tmp"):
+        if f.endswith((".jpg", ".mp4", ".gif", ".png", ".webp")):
+            path = f"/tmp/{f}"
+            try:
+                size = os.path.getsize(path)
+                os.remove(path)
+                deleted_files += 1
+                deleted_bytes += size
+            except:
+                pass
+    
+    media_groups.clear()
+    recent_hashes.clear()
+    
+    mb = deleted_bytes / 1024 / 1024
+    await message.answer(f"🧹 Очищено:\n• {deleted_files} файлов ({mb:.1f}MB)\n• Кэш дубликатов сброшен")
+
+
 @dp.callback_query(lambda c: c.data.startswith("pub:"))
 async def publish_callback(callback: types.CallbackQuery):
     post_id = callback.data.split(":", 1)[1]
@@ -514,6 +539,9 @@ async def publish_callback(callback: types.CallbackQuery):
         await callback.answer("Не найден")
         return
     post = pending_posts.pop(found_id)
+    for uid, pid in list(edit_state.items()):
+        if pid == found_id:
+            del edit_state[uid]
     if await publish_post(post, found_id):
         await callback.message.edit_reply_markup(reply_markup=None)
         await callback.message.reply("✅")
@@ -537,6 +565,9 @@ async def delay_callback(callback: types.CallbackQuery):
     publish_time = datetime.now() + timedelta(hours=1)
     scheduled_posts[found_id] = (publish_time, post)
     inc_stat("delayed", post.get("source"))
+    for uid, pid in list(edit_state.items()):
+        if pid == found_id:
+            del edit_state[uid]
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.reply(f"⏰ {publish_time.strftime('%H:%M')}")
 
@@ -552,6 +583,9 @@ async def skip_callback(callback: types.CallbackQuery):
     if found_id and found_id in pending_posts:
         post = pending_posts.pop(found_id)
         inc_stat("skipped", post.get("source"))
+        for uid, pid in list(edit_state.items()):
+            if pid == found_id:
+                del edit_state[uid]
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.reply("❌")
 
@@ -568,6 +602,7 @@ async def edit_callback(callback: types.CallbackQuery):
         await callback.answer("Не найден")
         return
     edit_state[callback.from_user.id] = found_id
+    await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.reply("✏️ Новый текст:")
     await callback.answer()
 
@@ -579,7 +614,80 @@ async def handle_edit_text(message: types.Message):
         await message.reply("Не актуален")
         return
     pending_posts[post_id]["text"] = message.text
-    await message.reply(f"✅\n\n{message.text}", reply_markup=create_keyboard(post_id))
+    await message.reply("✅ Текст обновлён")
+    await send_preview_to_admin(pending_posts[post_id], post_id)
+
+
+async def cleanup_cache():
+    while True:
+        now = datetime.now()
+        next_cleanup = now.replace(hour=4, minute=0, second=0, microsecond=0)
+        if now >= next_cleanup:
+            next_cleanup += timedelta(days=1)
+        
+        wait_seconds = (next_cleanup - now).total_seconds()
+        logger.info(f"Next cleanup at {next_cleanup.strftime('%H:%M')}")
+        await asyncio.sleep(wait_seconds)
+        
+        try:
+            deleted_files = 0
+            deleted_bytes = 0
+            
+            for f in os.listdir("/tmp"):
+                if f.endswith((".jpg", ".mp4", ".gif", ".png", ".webp")):
+                    path = f"/tmp/{f}"
+                    try:
+                        size = os.path.getsize(path)
+                        os.remove(path)
+                        deleted_files += 1
+                        deleted_bytes += size
+                    except:
+                        pass
+            
+            old_pending = []
+            for pid in list(pending_posts.keys()):
+                try:
+                    ts = int(pid.split("_")[-1]) if "_" in pid else 0
+                    if ts and (now.timestamp() - ts) > 86400:
+                        old_pending.append(pid)
+                except:
+                    pass
+            
+            for pid in old_pending:
+                post = pending_posts.pop(pid, None)
+                if post:
+                    if post.get("media_path"):
+                        try:
+                            os.remove(post["media_path"])
+                        except:
+                            pass
+                    if post.get("media_group"):
+                        for m in post["media_group"]:
+                            try:
+                                os.remove(m["path"])
+                            except:
+                                pass
+            
+            old_scheduled = []
+            for pid, (pt, _) in list(scheduled_posts.items()):
+                if (now - pt).total_seconds() > 86400:
+                    old_scheduled.append(pid)
+            
+            for pid in old_scheduled:
+                scheduled_posts.pop(pid, None)
+            
+            media_groups.clear()
+            
+            recent_hashes.clear()
+            
+            mb = deleted_bytes / 1024 / 1024
+            logger.info(f"Cleanup: {deleted_files} files ({mb:.1f}MB), {len(old_pending)} old pending, {len(old_scheduled)} old scheduled")
+            
+            if deleted_files > 0 or old_pending or old_scheduled:
+                await bot.send_message(ADMIN_ID, f"🧹 Очистка:\n• {deleted_files} файлов ({mb:.1f}MB)\n• {len(old_pending)} старых постов\n• {len(old_scheduled)} просроченных")
+        
+        except Exception as e:
+            logger.error(f"Cleanup error: {e}")
 
 
 async def keepalive():
@@ -623,6 +731,7 @@ async def main():
     asyncio.create_task(dp.start_polling(bot))
     asyncio.create_task(scheduled_publisher())
     asyncio.create_task(keepalive())
+    asyncio.create_task(cleanup_cache())
     
     await bot.send_message(ADMIN_ID, f"🟢 Бот запущен\nКаналов: {registered}/{len(SOURCE_CHANNELS)}")
     await userbot.run_until_disconnected()
