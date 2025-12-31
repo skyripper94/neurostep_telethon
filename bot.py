@@ -12,6 +12,9 @@ from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, InputMediaPhoto, InputMediaVideo
 from aiogram.filters import CommandStart, Command
+from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiohttp import ClientTimeout
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
@@ -37,12 +40,7 @@ SOURCE_CHANNELS = [
     "provod",
     "MirFacto",
     "biz_FM",
-    "Business_father",
-    "techno_media",
-    "sale_caviar",
-    "bugnotfeature",
-    "trends"
-    
+    "Business_father"
 ]
 
 AD_KEYWORDS = [
@@ -64,7 +62,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 userbot = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
-bot = Bot(token=BOT_TOKEN)
+
+session = AiohttpSession(timeout=ClientTimeout(total=60, connect=30))
+bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher()
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
@@ -903,6 +903,22 @@ async def keepalive():
             logger.error(f"KEEPALIVE: {e}")
 
 
+async def run_bot_polling():
+    retry_delay = 5
+    max_delay = 60
+    
+    while True:
+        try:
+            logger.info("Starting aiogram polling...")
+            retry_delay = 5
+            await dp.start_polling(bot, polling_timeout=30)
+        except Exception as e:
+            logger.error(f"Polling error: {e}")
+            logger.info(f"Retrying in {retry_delay}s...")
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, max_delay)
+
+
 async def main():
     load_stats()
     stats["start_time"] = datetime.now().isoformat()
@@ -952,7 +968,7 @@ async def main():
         )
         logger.info(f"Handler registered for {len(entities)} channel IDs")
     
-    asyncio.create_task(dp.start_polling(bot))
+    asyncio.create_task(run_bot_polling())
     asyncio.create_task(scheduled_publisher())
     asyncio.create_task(keepalive())
     asyncio.create_task(cleanup_cache())
@@ -961,18 +977,21 @@ async def main():
     logger.info("BOT READY")
     logger.info("="*50)
     
-    await bot.send_message(ADMIN_ID, f"🟢 Бот запущен\nКаналов: {registered}/{len(SOURCE_CHANNELS)}")
+    try:
+        await bot.send_message(ADMIN_ID, f"🟢 Бот запущен\nКаналов: {registered}/{len(SOURCE_CHANNELS)}")
+    except:
+        pass
     
     while True:
         try:
             await userbot.run_until_disconnected()
         except Exception as e:
-            logger.error(f"Disconnected: {e}")
+            logger.error(f"Userbot disconnected: {e}")
             await asyncio.sleep(5)
             try:
                 if not userbot.is_connected():
                     await userbot.connect()
-                    logger.info("Reconnected!")
+                    logger.info("Userbot reconnected!")
             except Exception as re:
                 logger.error(f"Reconnect failed: {re}")
 
