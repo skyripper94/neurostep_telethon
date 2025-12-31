@@ -582,25 +582,47 @@ async def handle_edit_text(message: types.Message):
     await message.reply(f"✅\n\n{message.text}", reply_markup=create_keyboard(post_id))
 
 
+async def keepalive():
+    while True:
+        await asyncio.sleep(300)
+        try:
+            await userbot.get_me()
+            logger.debug("Keepalive OK")
+        except Exception as e:
+            logger.warning(f"Keepalive error: {e}")
+
+
 async def main():
     load_stats()
     stats["start_time"] = datetime.now().isoformat()
     
     await userbot.start()
+    await userbot.catch_up()
     logger.info("Userbot started")
     
     registered = 0
+    entities = []
+    
     for channel in SOURCE_CHANNELS:
         try:
             entity = await userbot.get_entity(channel)
-            userbot.add_event_handler(handle_new_post, events.NewMessage(chats=entity))
-            logger.info(f"✓ @{channel}")
+            await userbot.get_messages(entity, limit=1)
+            entities.append(entity)
+            logger.info(f"✓ @{channel} (id={entity.id})")
             registered += 1
         except Exception as e:
             logger.error(f"✗ @{channel}: {e}")
     
+    if entities:
+        userbot.add_event_handler(
+            handle_new_post,
+            events.NewMessage(chats=entities)
+        )
+        logger.info(f"Handler registered for {len(entities)} channels")
+    
     asyncio.create_task(dp.start_polling(bot))
     asyncio.create_task(scheduled_publisher())
+    asyncio.create_task(keepalive())
     
     await bot.send_message(ADMIN_ID, f"🟢 Бот запущен\nКаналов: {registered}/{len(SOURCE_CHANNELS)}")
     await userbot.run_until_disconnected()
