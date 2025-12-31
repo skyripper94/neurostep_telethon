@@ -37,7 +37,12 @@ SOURCE_CHANNELS = [
     "provod",
     "MirFacto",
     "biz_FM",
-    "Business_father"
+    "Business_father",
+    "techno_media",
+    "sale_caviar",
+    "bugnotfeature",
+    "trends"
+    
 ]
 
 AD_KEYWORDS = [
