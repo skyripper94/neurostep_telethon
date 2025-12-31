@@ -458,7 +458,7 @@ async def handle_new_post(event):
 @dp.message(CommandStart())
 async def start_handler(message: types.Message):
     if message.from_user.id == ADMIN_ID:
-        await message.answer("✅ Бот работает\n/stats — статистика\n/cleanup — очистка кэша")
+        await message.answer("✅ Бот работает\n\n/stats — статистика\n/channels — проверка каналов\n/fetch @channel — получить пост\n/test — тест кнопок\n/cleanup — очистка")
 
 
 @dp.message(Command("stats"))
@@ -525,6 +525,109 @@ async def cleanup_handler(message: types.Message):
     
     mb = deleted_bytes / 1024 / 1024
     await message.answer(f"🧹 Очищено:\n• {deleted_files} файлов ({mb:.1f}MB)\n• Кэш дубликатов сброшен")
+
+
+@dp.message(Command("test"))
+async def test_handler(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    post_id = f"test_{int(datetime.now().timestamp())}"
+    post_data = {
+        "text": "Тестовый пост для проверки работы бота.\n\nВсе кнопки должны работать корректно.",
+        "original": "Тестовый текст",
+        "source": "test_channel",
+        "media_path": None,
+        "media_type": None,
+        "media_group": None
+    }
+    
+    pending_posts[post_id] = post_data
+    await send_preview_to_admin(post_data, post_id)
+    logger.info(f"Test post created: {post_id}")
+
+
+@dp.message(Command("channels"))
+async def channels_handler(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    await message.answer("🔍 Проверяю каналы...")
+    
+    results = []
+    for channel in SOURCE_CHANNELS:
+        try:
+            entity = await userbot.get_entity(channel)
+            msgs = await userbot.get_messages(entity, limit=1)
+            last_msg = msgs[0] if msgs else None
+            if last_msg:
+                delta = datetime.now(last_msg.date.tzinfo) - last_msg.date
+                hours = int(delta.total_seconds() // 3600)
+                results.append(f"✅ @{channel} — {hours}ч назад")
+            else:
+                results.append(f"⚠️ @{channel} — пусто")
+        except Exception as e:
+            results.append(f"❌ @{channel} — {str(e)[:30]}")
+    
+    await message.answer("\n".join(results))
+
+
+@dp.message(Command("fetch"))
+async def fetch_handler(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("Использование: /fetch channel_name")
+        return
+    
+    channel = args[1].replace("@", "")
+    
+    try:
+        entity = await userbot.get_entity(channel)
+        msgs = await userbot.get_messages(entity, limit=1)
+        
+        if not msgs:
+            await message.answer("Канал пуст")
+            return
+        
+        msg = msgs[0]
+        text = msg.text or msg.message or ""
+        has_media = msg.media is not None
+        
+        if not text and not has_media:
+            await message.answer("Последний пост пустой")
+            return
+        
+        rewritten = await rewrite_text(text) if text else ""
+        post_id = f"fetch_{int(datetime.now().timestamp())}"
+        
+        post_data = {
+            "text": rewritten,
+            "original": text,
+            "source": channel,
+            "media_path": None,
+            "media_type": None,
+            "media_group": None
+        }
+        
+        if isinstance(msg.media, MessageMediaPhoto):
+            path = await msg.download_media(file=f"/tmp/{post_id}.jpg")
+            post_data["media_path"] = path
+            post_data["media_type"] = "photo"
+        elif isinstance(msg.media, MessageMediaDocument):
+            mime = msg.file.mime_type or ""
+            if mime.startswith("video"):
+                path = await msg.download_media(file=f"/tmp/{post_id}.mp4")
+                post_data["media_path"] = path
+                post_data["media_type"] = "video"
+        
+        pending_posts[post_id] = post_data
+        await send_preview_to_admin(post_data, post_id)
+        
+    except Exception as e:
+        await message.answer(f"Ошибка: {e}")
 
 
 @dp.callback_query(lambda c: c.data.startswith("pub:"))
