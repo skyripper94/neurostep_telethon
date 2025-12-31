@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from typing import Dict
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
+from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, UpdateNewChannelMessage, UpdateNewMessage
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, InputMediaPhoto, InputMediaVideo
 from aiogram.filters import CommandStart, Command
@@ -71,6 +71,7 @@ edit_state = {}
 
 media_groups: Dict[int, Dict] = {}
 MEDIA_GROUP_TIMEOUT = 10
+registered_entities = []
 
 stats = {
     "received": 0,
@@ -221,6 +222,7 @@ def create_keyboard(post_id: str) -> InlineKeyboardMarkup:
 
 
 async def send_preview_to_admin(post_data: dict, post_id: str):
+    logger.info(f"PREVIEW: sending {post_id} to admin")
     try:
         text_with_footer = (post_data["text"] + CHANNEL_FOOTER) if post_data["text"] else CHANNEL_FOOTER
         caption = text_with_footer if len(text_with_footer) <= 1024 else text_with_footer[:1020] + "..."
@@ -228,9 +230,11 @@ async def send_preview_to_admin(post_data: dict, post_id: str):
         await bot.send_message(ADMIN_ID, f"📍 @{post_data['source']}")
         
         if post_data.get("media_group") and len(post_data["media_group"]) >= 1:
+            logger.info(f"PREVIEW: {post_id} has media_group with {len(post_data['media_group'])} items")
             media_group = []
             for i, media in enumerate(post_data["media_group"]):
                 if not os.path.exists(media["path"]):
+                    logger.warning(f"PREVIEW: file not found {media['path']}")
                     continue
                 file = FSInputFile(media["path"])
                 cap = caption if i == 0 else None
@@ -244,6 +248,7 @@ async def send_preview_to_admin(post_data: dict, post_id: str):
                 await bot.send_message(ADMIN_ID, "👆", reply_markup=create_keyboard(post_id))
         
         elif post_data.get("media_path") and os.path.exists(post_data["media_path"]):
+            logger.info(f"PREVIEW: {post_id} has single media: {post_data['media_type']}")
             file = FSInputFile(post_data["media_path"])
             if post_data["media_type"] == "photo":
                 await bot.send_photo(ADMIN_ID, file, caption=caption, reply_markup=create_keyboard(post_id), parse_mode="HTML")
@@ -252,11 +257,12 @@ async def send_preview_to_admin(post_data: dict, post_id: str):
             elif post_data["media_type"] == "gif":
                 await bot.send_animation(ADMIN_ID, file, caption=caption, reply_markup=create_keyboard(post_id), parse_mode="HTML")
         else:
+            logger.info(f"PREVIEW: {post_id} text only")
             await bot.send_message(ADMIN_ID, caption, reply_markup=create_keyboard(post_id), parse_mode="HTML")
         
-        logger.info(f"Preview sent: {post_id}")
+        logger.info(f"PREVIEW: {post_id} sent successfully")
     except Exception as e:
-        logger.error(f"Preview error: {e}")
+        logger.error(f"PREVIEW ERROR: {post_id} - {e}")
         inc_stat("errors")
 
 
@@ -268,6 +274,7 @@ async def publish_post(post: dict, post_id: str) -> bool:
             media_group = []
             for i, media in enumerate(post["media_group"]):
                 if not os.path.exists(media["path"]):
+                    logger.warning(f"File not found: {media['path']}")
                     continue
                 file = FSInputFile(media["path"])
                 caption = text_with_footer if i == 0 else None
@@ -278,6 +285,9 @@ async def publish_post(post: dict, post_id: str) -> bool:
             
             if media_group:
                 await bot.send_media_group(TARGET_CHANNEL, media_group)
+            else:
+                logger.error("No valid media in group")
+                return False
             
             for media in post["media_group"]:
                 try:
@@ -287,18 +297,38 @@ async def publish_post(post: dict, post_id: str) -> bool:
                     
         elif post.get("media_path") and os.path.exists(post["media_path"]):
             file = FSInputFile(post["media_path"])
-            if post.get("media_type") == "photo":
-                await bot.send_photo(TARGET_CHANNEL, file, caption=text_with_footer, parse_mode="HTML")
-            elif post.get("media_type") == "video":
-                await bot.send_video(TARGET_CHANNEL, file, caption=text_with_footer, parse_mode="HTML")
-            elif post.get("media_type") == "gif":
-                await bot.send_animation(TARGET_CHANNEL, file, caption=text_with_footer, parse_mode="HTML")
+            try:
+                if post.get("media_type") == "photo":
+                    await bot.send_photo(TARGET_CHANNEL, file, caption=text_with_footer, parse_mode="HTML")
+                elif post.get("media_type") == "video":
+                    await bot.send_video(TARGET_CHANNEL, file, caption=text_with_footer, parse_mode="HTML")
+                elif post.get("media_type") == "gif":
+                    await bot.send_animation(TARGET_CHANNEL, file, caption=text_with_footer, parse_mode="HTML")
+            except Exception as e:
+                if "can't parse" in str(e).lower():
+                    logger.warning(f"HTML parse error, retrying without parse_mode: {e}")
+                    file = FSInputFile(post["media_path"])
+                    if post.get("media_type") == "photo":
+                        await bot.send_photo(TARGET_CHANNEL, file, caption=text_with_footer)
+                    elif post.get("media_type") == "video":
+                        await bot.send_video(TARGET_CHANNEL, file, caption=text_with_footer)
+                    elif post.get("media_type") == "gif":
+                        await bot.send_animation(TARGET_CHANNEL, file, caption=text_with_footer)
+                else:
+                    raise
             try:
                 os.remove(post["media_path"])
             except:
                 pass
         else:
-            await bot.send_message(TARGET_CHANNEL, text_with_footer, parse_mode="HTML")
+            try:
+                await bot.send_message(TARGET_CHANNEL, text_with_footer, parse_mode="HTML")
+            except Exception as e:
+                if "can't parse" in str(e).lower():
+                    logger.warning(f"HTML parse error, retrying without parse_mode: {e}")
+                    await bot.send_message(TARGET_CHANNEL, text_with_footer)
+                else:
+                    raise
         
         inc_stat("published", post.get("source"))
         logger.info(f"Published: {post_id}")
@@ -315,22 +345,30 @@ async def scheduled_publisher():
         to_publish = [pid for pid, (pt, _) in list(scheduled_posts.items()) if now >= pt]
         for post_id in to_publish:
             _, post = scheduled_posts.pop(post_id)
-            if await publish_post(post, post_id):
-                await bot.send_message(ADMIN_ID, "⏰ Отложенный пост опубликован")
+            try:
+                if await publish_post(post, post_id):
+                    await bot.send_message(ADMIN_ID, "⏰ Отложенный пост опубликован")
+                else:
+                    await bot.send_message(ADMIN_ID, f"❌ Ошибка публикации отложенного поста")
+            except Exception as e:
+                logger.error(f"Scheduled publish error: {e}")
+                await bot.send_message(ADMIN_ID, f"❌ Ошибка: {str(e)[:100]}")
         await asyncio.sleep(30)
 
 
 async def process_media_group(group_id: int):
+    logger.info(f"MEDIA_GROUP: waiting {MEDIA_GROUP_TIMEOUT}s for group {group_id}")
     await asyncio.sleep(MEDIA_GROUP_TIMEOUT)
     
     if group_id not in media_groups:
+        logger.warning(f"MEDIA_GROUP: {group_id} not found after timeout")
         return
     
     group_data = media_groups.pop(group_id)
     messages = sorted(group_data["messages"], key=lambda m: m.id)
     source = group_data["source"]
     
-    logger.info(f"Processing group {group_id}: {len(messages)} items")
+    logger.info(f"MEDIA_GROUP: processing {group_id} from @{source} with {len(messages)} items")
     inc_stat("received", source)
     
     text = ""
@@ -340,10 +378,12 @@ async def process_media_group(group_id: int):
             break
     
     if is_ad(text):
+        logger.info(f"MEDIA_GROUP: {group_id} SKIP - ad")
         inc_stat("filtered_ad", source)
         return
     
     if is_duplicate(text):
+        logger.info(f"MEDIA_GROUP: {group_id} SKIP - duplicate")
         inc_stat("filtered_duplicate", source)
         return
     
@@ -357,16 +397,19 @@ async def process_media_group(group_id: int):
                 path = await msg.download_media(file=f"/tmp/{post_id}_{i}.jpg")
                 if path:
                     media_list.append({"path": path, "type": "photo"})
+                    logger.info(f"MEDIA_GROUP: downloaded photo {i+1}/{len(messages)}")
             elif isinstance(msg.media, MessageMediaDocument):
                 mime = msg.file.mime_type or ""
                 if mime.startswith("video"):
                     path = await msg.download_media(file=f"/tmp/{post_id}_{i}.mp4")
                     if path:
                         media_list.append({"path": path, "type": "video"})
+                        logger.info(f"MEDIA_GROUP: downloaded video {i+1}/{len(messages)}")
         except Exception as e:
-            logger.error(f"Download error: {e}")
+            logger.error(f"MEDIA_GROUP: download error: {e}")
     
     if not media_list:
+        logger.info(f"MEDIA_GROUP: {group_id} SKIP - no media downloaded")
         return
     
     post_data = {
@@ -379,19 +422,32 @@ async def process_media_group(group_id: int):
     }
     
     pending_posts[post_id] = post_data
+    logger.info(f"MEDIA_GROUP: sending preview for {post_id}")
     await send_preview_to_admin(post_data, post_id)
 
 
 async def handle_new_post(event):
     try:
-        source = event.chat.username or event.chat.title or "unknown"
+        chat = await event.get_chat()
+        chat_id = chat.id
+        source = getattr(chat, 'username', None) or getattr(chat, 'title', None) or "unknown"
         text = event.message.text or event.message.message or ""
         has_media = event.message.media is not None
         grouped_id = event.message.grouped_id
+        msg_id = event.message.id
         
-        logger.info(f"NEW: @{source} | {len(text)} chars | media={has_media} | group={grouped_id}")
+        logger.info("="*40)
+        logger.info(f"NEW POST RECEIVED")
+        logger.info(f"  Source: @{source} (id={chat_id})")
+        logger.info(f"  Message ID: {msg_id}")
+        logger.info(f"  Text length: {len(text)}")
+        logger.info(f"  Has media: {has_media}")
+        logger.info(f"  Grouped ID: {grouped_id}")
+        logger.info(f"  Text preview: {text[:100]}..." if len(text) > 100 else f"  Text: {text}")
+        logger.info("="*40)
         
         if grouped_id:
+            logger.info(f"  -> Media group, adding to queue")
             if grouped_id not in media_groups:
                 media_groups[grouped_id] = {"messages": [], "source": source}
                 asyncio.create_task(process_media_group(grouped_id))
@@ -401,21 +457,28 @@ async def handle_new_post(event):
         inc_stat("received", source)
         
         if not text and not has_media:
+            logger.info(f"  -> SKIP: no text and no media")
             return
         
         if len(text) < 20 and not has_media:
+            logger.info(f"  -> SKIP: text too short ({len(text)} < 20)")
             return
         
         if is_ad(text):
+            logger.info(f"  -> SKIP: detected as AD")
             inc_stat("filtered_ad", source)
             return
         
         if is_duplicate(text):
+            logger.info(f"  -> SKIP: duplicate")
             inc_stat("filtered_duplicate", source)
             return
         
+        logger.info(f"  -> PASSED filters, rewriting...")
         rewritten = await rewrite_text(text) if text else ""
-        post_id = f"{event.message.id}_{int(event.message.date.timestamp())}"
+        logger.info(f"  -> Rewritten: {rewritten[:100]}..." if len(rewritten) > 100 else f"  -> Rewritten: {rewritten}")
+        
+        post_id = f"{msg_id}_{int(event.message.date.timestamp())}"
         
         post_data = {
             "text": rewritten,
@@ -427,38 +490,46 @@ async def handle_new_post(event):
         }
         
         if event.message.media:
+            logger.info(f"  -> Downloading media...")
             try:
                 if isinstance(event.message.media, MessageMediaPhoto):
                     path = await event.message.download_media(file=f"/tmp/{post_id}.jpg")
                     post_data["media_path"] = path
                     post_data["media_type"] = "photo"
+                    logger.info(f"  -> Downloaded photo: {path}")
                 elif isinstance(event.message.media, MessageMediaDocument):
                     mime = event.message.file.mime_type or ""
+                    logger.info(f"  -> Document mime: {mime}")
                     if mime.startswith("video"):
                         path = await event.message.download_media(file=f"/tmp/{post_id}.mp4")
                         post_data["media_path"] = path
                         post_data["media_type"] = "video"
+                        logger.info(f"  -> Downloaded video: {path}")
                     elif "gif" in mime:
                         path = await event.message.download_media(file=f"/tmp/{post_id}.gif")
                         post_data["media_path"] = path
                         post_data["media_type"] = "gif"
+                        logger.info(f"  -> Downloaded gif: {path}")
             except Exception as e:
-                logger.error(f"Media error: {e}")
+                logger.error(f"  -> Media download error: {e}")
         
         if not rewritten and not post_data["media_path"]:
+            logger.info(f"  -> SKIP: no content after processing")
             return
         
         pending_posts[post_id] = post_data
+        logger.info(f"  -> Sending preview to admin...")
         await send_preview_to_admin(post_data, post_id)
+        logger.info(f"  -> DONE: post_id={post_id}")
             
     except Exception as e:
-        logger.error(f"Handler error: {e}")
+        logger.error(f"HANDLER ERROR: {e}", exc_info=True)
 
 
 @dp.message(CommandStart())
 async def start_handler(message: types.Message):
     if message.from_user.id == ADMIN_ID:
-        await message.answer("✅ Бот работает\n\n/stats — статистика\n/channels — проверка каналов\n/fetch @channel — получить пост\n/test — тест кнопок\n/cleanup — очистка")
+        await message.answer("✅ Бот работает\n\n/stats — статистика\n/channels — проверка каналов\n/fetch @channel — получить пост\n/test — тест кнопок\n/debug — диагностика\n/cleanup — очистка")
 
 
 @dp.message(Command("stats"))
@@ -572,6 +643,36 @@ async def channels_handler(message: types.Message):
     await message.answer("\n".join(results))
 
 
+@dp.message(Command("debug"))
+async def debug_handler(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    handlers = userbot.list_event_handlers()
+    handler_info = f"Event handlers: {len(handlers)}\n"
+    for callback, event in handlers:
+        handler_info += f"• {callback.__name__}: {type(event).__name__}\n"
+        if hasattr(event, 'chats') and event.chats:
+            handler_info += f"  Chats: {len(event.chats)} IDs\n"
+    
+    entities_info = f"IDs: {registered_entities[:5]}{'...' if len(registered_entities) > 5 else ''}\n" if registered_entities else "None\n"
+    
+    me = await userbot.get_me()
+    
+    text = f"""🔧 Debug info
+
+👤 Userbot: @{me.username} (id={me.id})
+📡 Connected: {userbot.is_connected()}
+
+{handler_info}
+📋 Registered: {len(registered_entities)} channels
+{entities_info}
+📊 Pending: {len(pending_posts)}
+📅 Scheduled: {len(scheduled_posts)}"""
+    
+    await message.answer(text)
+
+
 @dp.message(Command("fetch"))
 async def fetch_handler(message: types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -645,12 +746,21 @@ async def publish_callback(callback: types.CallbackQuery):
     for uid, pid in list(edit_state.items()):
         if pid == found_id:
             del edit_state[uid]
-    if await publish_post(post, found_id):
-        await callback.message.edit_reply_markup(reply_markup=None)
-        await callback.message.reply("✅")
-    else:
+    try:
+        if await publish_post(post, found_id):
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except:
+                pass
+            await callback.message.reply("✅")
+        else:
+            pending_posts[found_id] = post
+            await callback.message.reply("❌ Ошибка публикации, смотри логи")
+    except Exception as e:
+        logger.error(f"Publish callback error: {e}")
         pending_posts[found_id] = post
-        await callback.answer("Ошибка")
+        await callback.message.reply(f"❌ {str(e)[:100]}")
+    await callback.answer()
 
 
 @dp.callback_query(lambda c: c.data.startswith("delay:"))
@@ -671,8 +781,12 @@ async def delay_callback(callback: types.CallbackQuery):
     for uid, pid in list(edit_state.items()):
         if pid == found_id:
             del edit_state[uid]
-    await callback.message.edit_reply_markup(reply_markup=None)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except:
+        pass
     await callback.message.reply(f"⏰ {publish_time.strftime('%H:%M')}")
+    await callback.answer()
 
 
 @dp.callback_query(lambda c: c.data.startswith("skip:"))
@@ -689,8 +803,12 @@ async def skip_callback(callback: types.CallbackQuery):
         for uid, pid in list(edit_state.items()):
             if pid == found_id:
                 del edit_state[uid]
-    await callback.message.edit_reply_markup(reply_markup=None)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except:
+        pass
     await callback.message.reply("❌")
+    await callback.answer()
 
 
 @dp.callback_query(lambda c: c.data.startswith("edit:"))
@@ -705,7 +823,10 @@ async def edit_callback(callback: types.CallbackQuery):
         await callback.answer("Не найден")
         return
     edit_state[callback.from_user.id] = found_id
-    await callback.message.edit_reply_markup(reply_markup=None)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except:
+        pass
     await callback.message.reply("✏️ Новый текст:")
     await callback.answer()
 
@@ -794,49 +915,106 @@ async def cleanup_cache():
 
 
 async def keepalive():
+    iteration = 0
     while True:
         await asyncio.sleep(300)
+        iteration += 1
         try:
-            await userbot.get_me()
-            logger.debug("Keepalive OK")
+            me = await userbot.get_me()
+            is_connected = userbot.is_connected()
+            handlers_count = len(userbot.list_event_handlers())
+            logger.info(f"HEARTBEAT #{iteration}: connected={is_connected}, handlers={handlers_count}, pending={len(pending_posts)}, user=@{me.username}")
         except Exception as e:
-            logger.warning(f"Keepalive error: {e}")
+            logger.error(f"HEARTBEAT ERROR: {e}")
 
 
 async def main():
     load_stats()
     stats["start_time"] = datetime.now().isoformat()
     
+    logger.info("="*50)
+    logger.info("BOT STARTING")
+    logger.info("="*50)
+    
     await userbot.start()
+    logger.info("Userbot client started")
+    
+    me = await userbot.get_me()
+    logger.info(f"Logged in as: @{me.username} (id={me.id})")
+    
     await userbot.catch_up()
-    logger.info("Userbot started")
+    logger.info("catch_up() completed")
     
     registered = 0
     entities = []
+    global registered_entities
+    
+    logger.info(f"Registering {len(SOURCE_CHANNELS)} channels...")
     
     for channel in SOURCE_CHANNELS:
         try:
             entity = await userbot.get_entity(channel)
-            await userbot.get_messages(entity, limit=1)
-            entities.append(entity)
-            logger.info(f"✓ @{channel} (id={entity.id})")
+            logger.info(f"  get_entity(@{channel}) -> id={entity.id}")
+            
+            msgs = await userbot.get_messages(entity, limit=1)
+            logger.info(f"  get_messages(@{channel}) -> {len(msgs)} msgs")
+            
+            entities.append(entity.id)
             registered += 1
         except Exception as e:
-            logger.error(f"✗ @{channel}: {e}")
+            logger.error(f"  FAILED @{channel}: {e}")
+    
+    logger.info(f"Registered {registered}/{len(SOURCE_CHANNELS)} channels")
+    logger.info(f"Entity IDs: {entities}")
     
     if entities:
+        registered_entities = entities
         userbot.add_event_handler(
             handle_new_post,
             events.NewMessage(chats=entities)
         )
-        logger.info(f"Handler registered for {len(entities)} channels")
+        logger.info(f"PRIMARY handler registered for {len(entities)} channels")
+    
+    async def catch_all_handler(event):
+        try:
+            chat = await event.get_chat()
+            chat_id = chat.id
+            chat_name = getattr(chat, 'username', None) or getattr(chat, 'title', None) or '?'
+            text_preview = (event.message.text or event.message.message or "")[:50]
+            is_monitored = chat_id in registered_entities or (-1000000000000 - chat_id) in registered_entities or (chat_id + 1000000000000) in registered_entities
+            
+            logger.info(f"CATCH_ALL: @{chat_name} | id={chat_id} | monitored={is_monitored} | text={text_preview}...")
+        except Exception as e:
+            logger.error(f"CATCH_ALL error: {e}")
+    
+    userbot.add_event_handler(catch_all_handler, events.NewMessage())
+    logger.info("CATCH_ALL handler registered (receives ALL messages)")
+    
+    @userbot.on(events.Raw)
+    async def raw_update_handler(event):
+        event_type = type(event).__name__
+        if 'Message' in event_type or 'Channel' in event_type:
+            logger.info(f"RAW_UPDATE: {event_type}")
+    
+    handlers = userbot.list_event_handlers()
+    logger.info(f"Total event handlers: {len(handlers)}")
+    for cb, ev in handlers:
+        chats_info = ""
+        if hasattr(ev, 'chats') and ev.chats:
+            chats_info = f" chats={ev.chats}"
+        logger.info(f"  - {cb.__name__}: {type(ev).__name__}{chats_info}")
     
     asyncio.create_task(dp.start_polling(bot))
     asyncio.create_task(scheduled_publisher())
     asyncio.create_task(keepalive())
     asyncio.create_task(cleanup_cache())
     
-    await bot.send_message(ADMIN_ID, f"🟢 Бот запущен\nКаналов: {registered}/{len(SOURCE_CHANNELS)}")
+    logger.info("All background tasks started")
+    logger.info("="*50)
+    logger.info("BOT READY - LISTENING FOR EVENTS")
+    logger.info("="*50)
+    
+    await bot.send_message(ADMIN_ID, f"🟢 Бот запущен\nКаналов: {registered}/{len(SOURCE_CHANNELS)}\nUserbot: @{me.username}")
     await userbot.run_until_disconnected()
 
 
