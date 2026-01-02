@@ -50,7 +50,7 @@ AD_KEYWORDS = [
     "розыгрыш", "giveaway", "спонсор", "sponsor",
     "utm_", "?ref=", "bit.ly", "clck.ru", "erid",
     "кэшбэк", "cashback", "при поддержке",
-    "интеграция", "нативная"
+    "нативная
 ]
 
 logging.basicConfig(
@@ -107,8 +107,6 @@ REWRITE_PROMPT = """Перепиши новость коротко и цепля
 
 ССЫЛКИ НА САЙТЫ:
 - Если есть ссылка на внешний сайт (НЕ telegram) — оформи: <a href="URL">тут</a>
-
-Meta/Instagram/WhatsApp → сноска: * — Meta, запрещена в РФ
 
 Текст:
 {text}"""
