@@ -269,6 +269,8 @@ async def send_preview_to_admin(post_data: dict, post_id: str):
 
 async def publish_post(post: dict, post_id: str) -> bool:
     try:
+        # СТАЛО:
+        channel_id = await get_target_channel()
         text_with_footer = (post["text"] + CHANNEL_FOOTER) if post["text"] else CHANNEL_FOOTER
         
         if post.get("media_group") and len(post["media_group"]) > 0:
@@ -931,6 +933,8 @@ async def main():
     
     await userbot.start()
     logger.info("Userbot client started")
+    channel_id = await get_target_channel()
+    logger.info(f"Target channel: {channel_id}")
     
     me = await userbot.get_me()
     logger.info(f"Logged in as: @{me.username} (id={me.id})")
