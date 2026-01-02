@@ -12,7 +12,6 @@ from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, InputMediaPhoto, InputMediaVideo
 from aiogram.filters import CommandStart, Command
-from aiogram.client.default import DefaultBotProperties
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
@@ -79,6 +78,7 @@ edit_state = {}
 media_groups: Dict[int, Dict] = {}
 MEDIA_GROUP_TIMEOUT = 10
 registered_entities = []
+resolved_channel_id = None
 
 stats = {
     "received": 0,
@@ -193,6 +193,30 @@ def markdown_to_html(text: str) -> str:
     return text
 
 
+async def get_target_channel():
+    global resolved_channel_id
+    if resolved_channel_id:
+        return resolved_channel_id
+    
+    channel = TARGET_CHANNEL
+    if channel.startswith("@"):
+        channel = channel[1:]
+    
+    if channel.lstrip("-").isdigit():
+        resolved_channel_id = int(channel)
+        return resolved_channel_id
+    
+    try:
+        entity = await userbot.get_entity(channel)
+        resolved_channel_id = int(f"-100{entity.id}")
+        logger.info(f"Resolved channel @{channel} to {resolved_channel_id}")
+        return resolved_channel_id
+    except Exception as e:
+        logger.error(f"Failed to resolve channel: {e}")
+    
+    return TARGET_CHANNEL
+
+
 async def rewrite_text(text: str) -> str:
     if not text or len(text) < 20:
         return clean_text(text)
@@ -269,7 +293,6 @@ async def send_preview_to_admin(post_data: dict, post_id: str):
 
 async def publish_post(post: dict, post_id: str) -> bool:
     try:
-        # СТАЛО:
         channel_id = await get_target_channel()
         text_with_footer = (post["text"] + CHANNEL_FOOTER) if post["text"] else CHANNEL_FOOTER
         
@@ -287,7 +310,7 @@ async def publish_post(post: dict, post_id: str) -> bool:
                     media_group.append(InputMediaVideo(media=file, caption=caption, parse_mode="HTML"))
             
             if media_group:
-                await bot.send_media_group(TARGET_CHANNEL, media_group)
+                await bot.send_media_group(channel_id, media_group)
             else:
                 logger.error("No valid media in group")
                 return False
@@ -302,21 +325,21 @@ async def publish_post(post: dict, post_id: str) -> bool:
             file = FSInputFile(post["media_path"])
             try:
                 if post.get("media_type") == "photo":
-                    await bot.send_photo(TARGET_CHANNEL, file, caption=text_with_footer, parse_mode="HTML")
+                    await bot.send_photo(channel_id, file, caption=text_with_footer, parse_mode="HTML")
                 elif post.get("media_type") == "video":
-                    await bot.send_video(TARGET_CHANNEL, file, caption=text_with_footer, parse_mode="HTML")
+                    await bot.send_video(channel_id, file, caption=text_with_footer, parse_mode="HTML")
                 elif post.get("media_type") == "gif":
-                    await bot.send_animation(TARGET_CHANNEL, file, caption=text_with_footer, parse_mode="HTML")
+                    await bot.send_animation(channel_id, file, caption=text_with_footer, parse_mode="HTML")
             except Exception as e:
                 if "can't parse" in str(e).lower():
                     logger.warning(f"HTML parse error, retrying without parse_mode: {e}")
                     file = FSInputFile(post["media_path"])
                     if post.get("media_type") == "photo":
-                        await bot.send_photo(TARGET_CHANNEL, file, caption=text_with_footer)
+                        await bot.send_photo(channel_id, file, caption=text_with_footer)
                     elif post.get("media_type") == "video":
-                        await bot.send_video(TARGET_CHANNEL, file, caption=text_with_footer)
+                        await bot.send_video(channel_id, file, caption=text_with_footer)
                     elif post.get("media_type") == "gif":
-                        await bot.send_animation(TARGET_CHANNEL, file, caption=text_with_footer)
+                        await bot.send_animation(channel_id, file, caption=text_with_footer)
                 else:
                     raise
             try:
@@ -325,11 +348,11 @@ async def publish_post(post: dict, post_id: str) -> bool:
                 pass
         else:
             try:
-                await bot.send_message(TARGET_CHANNEL, text_with_footer, parse_mode="HTML")
+                await bot.send_message(channel_id, text_with_footer, parse_mode="HTML")
             except Exception as e:
                 if "can't parse" in str(e).lower():
                     logger.warning(f"HTML parse error, retrying without parse_mode: {e}")
-                    await bot.send_message(TARGET_CHANNEL, text_with_footer)
+                    await bot.send_message(channel_id, text_with_footer)
                 else:
                     raise
         
@@ -638,11 +661,13 @@ async def debug_handler(message: types.Message):
     entities_info = f"IDs: {registered_entities[:5]}{'...' if len(registered_entities) > 5 else ''}\n" if registered_entities else "None\n"
     
     me = await userbot.get_me()
+    channel_id = await get_target_channel()
     
     text = f"""🔧 Debug info
 
 👤 Userbot: @{me.username} (id={me.id})
 📡 Connected: {userbot.is_connected()}
+📢 Target: {channel_id}
 
 {handler_info}
 📋 Registered: {len(registered_entities)} channels
@@ -881,7 +906,6 @@ async def cleanup_cache():
                 scheduled_posts.pop(pid, None)
             
             media_groups.clear()
-            
             recent_hashes.clear()
             
             mb = deleted_bytes / 1024 / 1024
@@ -933,11 +957,12 @@ async def main():
     
     await userbot.start()
     logger.info("Userbot client started")
-    channel_id = await get_target_channel()
-    logger.info(f"Target channel: {channel_id}")
     
     me = await userbot.get_me()
     logger.info(f"Logged in as: @{me.username} (id={me.id})")
+    
+    channel_id = await get_target_channel()
+    logger.info(f"Target channel: {channel_id}")
     
     await userbot.catch_up()
     logger.info("catch_up() completed")
@@ -984,7 +1009,7 @@ async def main():
     logger.info("="*50)
     
     try:
-        await bot.send_message(ADMIN_ID, f"🟢 Бот запущен\nКаналов: {registered}/{len(SOURCE_CHANNELS)}")
+        await bot.send_message(ADMIN_ID, f"🟢 Бот запущен\nКаналов: {registered}/{len(SOURCE_CHANNELS)}\nTarget: {channel_id}")
     except:
         pass
     
