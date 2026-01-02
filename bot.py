@@ -50,7 +50,7 @@ AD_KEYWORDS = [
     "розыгрыш", "giveaway", "спонсор", "sponsor",
     "utm_", "?ref=", "bit.ly", "clck.ru", "erid",
     "кэшбэк", "cashback", "при поддержке",
-    "нативная
+    "нативная"
 ]
 
 logging.basicConfig(
